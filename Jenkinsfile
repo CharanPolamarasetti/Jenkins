@@ -1,63 +1,72 @@
 pipeline {
-    agent any
-    tools {
-        maven 'mymaven'
+    agent {
+        label 'executor-1'
     }
-    
+    tools {
+        maven 'devmaven'
+    }
+    environment {
+        ECR_REPO = '<ecr-repo-path>/service-1'
+    }
+
     stages {
-        stage('CleanWs') {
+        stage ('cleanWS') {
             steps {
                 cleanWs()
             }
         }
-        stage('Code') {
+        stage ('code') {
             steps {
-                git 'https://github.com/CharanPolamarasetti/Jenkins-Docker.git'
+                git 'https://<source-code-path>'
             }
         }
-        stage('Build') {
-            steps{
+        stage ('build') {
+            steps {
                 sh 'mvn clean package'
-                sh 'cp -r target Docker-app'
             }
         }
-        stage('CQA') {
+        stage ('CQA') {
             steps {
-                withSonarQubeEnv('sonarqube') {
-                    sh "mvn clean verify sonar:sonar -Dsonar.projectKey=devopsproject"
+                withSonarQubeEnv ('sonar') {
+                    sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=devproject'
                 }
             }
         }
-        stage('QualityGates'){
-            steps{
-                waitForQualityGate abortPipeline: true, credentialsId: 'sonarqube'
+        stage ('Qualitygates') {
+            steps {
+                waitForQualityGate abortPipeline: true, credentialsId: 'sonar'
             }
         }
-        stage('Artifacts') {
+        stage ('Artifacts & Docker build') {
             steps {
-                nexusArtifactUploader artifacts: [[artifactId: 'vprofile', classifier: '', file: 'target/vprofile-v2.war', type: 'war']], credentialsId: 'nexus-token', groupId: 'com.visualpathit', nexusUrl: '3.148.232.154:8081/', nexusVersion: 'nexus3', protocol: 'http', repository: 'artifactrepo', version: 'v2'
+                parallel {
+                    stage ('Nexus Artifacts') {
+                        steps {
+                            nexusArtifactUploader artifacts: <nexus-grrovy-syntax>
+                        }
+                    }
+                    stage ('Docker') {
+                        steps {
+                            sh 'docker build --tag $ECR_REPO:$BUILD_NUMBER .'
+                        }
+                    }
+                }
             }
         }
-        stage('Build Images') {
+        stage ('ImageScan') {
             steps {
-                sh 'docker build --tag dbimage:1.0 Docker-db'
-                sh 'docker build --tag appimage:1.0 Docker-app'
+                sh 'trivy image --severity HIGH,CRITICAL --exit-code 1 -f table -o service-1.txt $ECR_REPO:$BUILD_NUMBER'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: '*.txt', allowEmptyArchive: true
+                }
             }
         }
-        stage('ImageScan') {
+        stage ('registry-push') {
             steps {
-                sh 'trivy image --severity HIGH,CRITICAL -f table -o dbimage-scan.txt dbimage:1.0'
-                sh 'trivy image --severity HIGH,CRITICAL -f table -o appimage-scan.txt appimage:1.0'
-                archiveArtifacts artifacts: '*.txt'
-            }
-        }
-        stage('Registry-ECR') {
-            steps {
-                sh 'aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 285065163560.dkr.ecr.us-east-2.amazonaws.com'
-                sh 'docker tag dbimage:1.0 285065163560.dkr.ecr.us-east-2.amazonaws.com/dbrepo:1.0'
-                sh 'docker push 285065163560.dkr.ecr.us-east-2.amazonaws.com/dbrepo:1.0'
-                sh 'docker tag appimage:1.0 285065163560.dkr.ecr.us-east-2.amazonaws.com/apprepo:1.0'
-                sh 'docker push 285065163560.dkr.ecr.us-east-2.amazonaws.com/apprepo:1.0'
+                sh '<jenkins-agent-IAM-evaluation>'
+                sh 'docker push $ECR_REPO:$BUILD_NUMBER'
             }
         }
     }
